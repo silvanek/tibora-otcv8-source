@@ -74,7 +74,7 @@ jobs:
       - name: Verify Boost headers
         run: |
           $includeDir = Join-Path $env:VCPKG_ROOT "installed\x86-windows-static\include"
-          $boostHeader = Join-Path $includeDir "boost\asio\io_service.hpp"
+          $boostHeader = Join-Path $includeDir "boost\asio\io_context.hpp"
 
           if (-not (Test-Path $boostHeader)) {
             throw "Missing Boost header: $boostHeader"
@@ -86,6 +86,7 @@ jobs:
       - name: Integrate vcpkg
         run: |
           & "$env:VCPKG_ROOT\vcpkg.exe" integrate install
+
           if ($LASTEXITCODE -ne 0) {
             throw "vcpkg integration failed"
           }
