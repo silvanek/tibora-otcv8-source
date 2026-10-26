@@ -29,10 +29,15 @@ jobs:
       - name: Install vcpkg
         run: |
           git clone --branch 2026.10.16 --depth 1 https://github.com/microsoft/vcpkg.git "$env:RUNNER_TEMP\vcpkg"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to clone vcpkg"
+          }
+
           & "$env:RUNNER_TEMP\vcpkg\bootstrap-vcpkg.bat" -disableMetrics
           if ($LASTEXITCODE -ne 0) {
             throw "vcpkg bootstrap failed"
           }
+
           "VCPKG_ROOT=$env:RUNNER_TEMP\vcpkg" >> $env:GITHUB_ENV
 
       - name: Install dependencies
@@ -66,6 +71,18 @@ jobs:
             throw "Dependency installation failed"
           }
 
+      - name: Verify Boost headers
+        run: |
+          $includeDir = Join-Path $env:VCPKG_ROOT "installed\x86-windows-static\include"
+          $boostHeader = Join-Path $includeDir "boost\asio\io_service.hpp"
+
+          if (-not (Test-Path $boostHeader)) {
+            throw "Missing Boost header: $boostHeader"
+          }
+
+          Write-Host "Boost headers verified"
+          Write-Host "Include directory: $includeDir"
+
       - name: Integrate vcpkg
         run: |
           & "$env:VCPKG_ROOT\vcpkg.exe" integrate install
@@ -76,22 +93,38 @@ jobs:
       - name: Compile DirectX
         timeout-minutes: 25
         run: |
+          $env:INCLUDE = "$env:VCPKG_ROOT\installed\x86-windows-static\include;$env:INCLUDE"
+          $env:LIB = "$env:VCPKG_ROOT\installed\x86-windows-static\lib;$env:LIB"
+
           Push-Location vc16
-          msbuild /m /p:Configuration=DirectX /p:BUILD_REVISION=${{ github.run_number }}
-          if ($LASTEXITCODE -ne 0) {
-            throw "DirectX compilation failed"
+          try {
+            msbuild /m /p:Configuration=DirectX /p:Platform=Win32 /p:VcpkgRoot="$env:VCPKG_ROOT\" /p:VcpkgTriplet=x86-windows-static /p:BUILD_REVISION=${{ github.run_number }}
+
+            if ($LASTEXITCODE -ne 0) {
+              throw "DirectX compilation failed"
+            }
           }
-          Pop-Location
+          finally {
+            Pop-Location
+          }
 
       - name: Compile OpenGL
         timeout-minutes: 25
         run: |
+          $env:INCLUDE = "$env:VCPKG_ROOT\installed\x86-windows-static\include;$env:INCLUDE"
+          $env:LIB = "$env:VCPKG_ROOT\installed\x86-windows-static\lib;$env:LIB"
+
           Push-Location vc16
-          msbuild /m /p:Configuration=OpenGL /p:BUILD_REVISION=${{ github.run_number }}
-          if ($LASTEXITCODE -ne 0) {
-            throw "OpenGL compilation failed"
+          try {
+            msbuild /m /p:Configuration=OpenGL /p:Platform=Win32 /p:VcpkgRoot="$env:VCPKG_ROOT\" /p:VcpkgTriplet=x86-windows-static /p:BUILD_REVISION=${{ github.run_number }}
+
+            if ($LASTEXITCODE -ne 0) {
+              throw "OpenGL compilation failed"
+            }
           }
-          Pop-Location
+          finally {
+            Pop-Location
+          }
 
       - name: Upload Windows binaries
         uses: actions/upload-artifact@v4
