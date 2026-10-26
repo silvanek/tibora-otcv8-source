@@ -1,6 +1,11 @@
-name: Build on request
+
+name: Build Tibora OTCv8 Windows
+
 on:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   Windows:
@@ -8,65 +13,92 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 120
 
+    defaults:
+      run:
+        shell: pwsh
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Setup MSBuild and add to PATH
+      - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Download legacy 7-Zip for vcpkg
-        shell: pwsh
+      - name: Install vcpkg
         run: |
-          $ErrorActionPreference = 'Stop'
-          $downloads = Join-Path $env:GITHUB_WORKSPACE 'vcpkg-downloads'
-          New-Item -ItemType Directory -Force -Path $downloads | Out-Null
-          $archive = Join-Path $downloads '7z2107-extra.7z'
-          $url = 'https://sourceforge.net/projects/sevenzip/files/7-Zip/21.07/7z2107-extra.7z/download'
-          curl.exe -fL --retry 3 --retry-delay 3 -o $archive $url
-          if ($LASTEXITCODE -ne 0) { throw 'Could not download 7-Zip archive' }
-          $bytes = [System.IO.File]::ReadAllBytes($archive)
-          if ($bytes.Length -lt 100000 -or [BitConverter]::ToString($bytes[0..5]) -ne '37-7A-BC-AF-27-1C') {
-            throw 'Downloaded file is not a valid 7z archive'
+          git clone --branch 2026.10.16 --depth 1 https://github.com/microsoft/vcpkg.git "$env:RUNNER_TEMP\vcpkg"
+          & "$env:RUNNER_TEMP\vcpkg\bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE -ne 0) {
+            throw "vcpkg bootstrap failed"
           }
-          "VCPKG_DOWNLOADS=$downloads" >> $env:GITHUB_ENV
+          "VCPKG_ROOT=$env:RUNNER_TEMP\vcpkg" >> $env:GITHUB_ENV
 
-      - name: Run vcpkg
-        uses: lukka/run-vcpkg@v7
-        with:
-          vcpkgDirectory: ${{ runner.workspace }}/vcpkg/
-          vcpkgTriplet: x86-windows-static
-          vcpkgGitCommitId: 3b3bd424827a1f7f4813216f6b32b6c61e386b2e
-          vcpkgArguments: >
-            boost-iostreams boost-asio boost-beast boost-system boost-variant boost-lockfree boost-process boost-program-options boost-uuid boost-filesystem
-            luajit glew physfs openal-soft libogg libvorbis zlib libzip bzip2 openssl
+      - name: Install dependencies
+        run: |
+          $packages = @(
+            "boost-iostreams"
+            "boost-asio"
+            "boost-beast"
+            "boost-system"
+            "boost-variant"
+            "boost-lockfree"
+            "boost-process"
+            "boost-program-options"
+            "boost-uuid"
+            "boost-filesystem"
+            "luajit"
+            "glew"
+            "physfs"
+            "openal-soft"
+            "libogg"
+            "libvorbis"
+            "zlib"
+            "libzip"
+            "bzip2"
+            "openssl"
+          )
+
+          & "$env:VCPKG_ROOT\vcpkg.exe" install @packages --triplet x86-windows-static
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Dependency installation failed"
+          }
 
       - name: Integrate vcpkg
-        shell: pwsh
         run: |
-          & "${{ runner.workspace }}/vcpkg/vcpkg.exe" integrate install
+          & "$env:VCPKG_ROOT\vcpkg.exe" integrate install
+          if ($LASTEXITCODE -ne 0) {
+            throw "vcpkg integration failed"
+          }
 
-      - name: Compile otclient_dx
-        timeout-minutes: 20
-        shell: pwsh
+      - name: Compile DirectX
+        timeout-minutes: 25
         run: |
-          Set-Location vc16
-          MSBuild /property:Configuration=DirectX /p:BUILD_REVISION=${{ github.run_number }}
+          Push-Location vc16
+          msbuild /m /p:Configuration=DirectX /p:BUILD_REVISION=${{ github.run_number }}
+          if ($LASTEXITCODE -ne 0) {
+            throw "DirectX compilation failed"
+          }
+          Pop-Location
 
-      - name: Compile otclient_gl
-        timeout-minutes: 20
-        shell: pwsh
+      - name: Compile OpenGL
+        timeout-minutes: 25
         run: |
-          Set-Location vc16
-          MSBuild /property:Configuration=OpenGL /p:BUILD_REVISION=${{ github.run_number }}
+          Push-Location vc16
+          msbuild /m /p:Configuration=OpenGL /p:BUILD_REVISION=${{ github.run_number }}
+          if ($LASTEXITCODE -ne 0) {
+            throw "OpenGL compilation failed"
+          }
+          Pop-Location
 
       - name: Upload Windows binaries
         uses: actions/upload-artifact@v4
         with:
-          name: tibora-otcv8-windows
+          name: Tibora-OTCv8-Windows
           path: |
-            otclient_gl.exe
             otclient_dx.exe
+            otclient_gl.exe
           if-no-files-found: error
+          retention-days: 7
