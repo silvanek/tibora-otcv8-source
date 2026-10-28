@@ -1,3 +1,4 @@
+
 /*
  * Copyright (c) 2010-2017 OTClient <https://github.com/edubart/otclient>
  *
@@ -48,7 +49,8 @@ public:
     static void poll();
     static void terminate();
 
-    void connect(const std::string& host, uint16 port, const std::function<void()>& connectCallback);
+    void connect(const std::string& host, uint16 port,
+                 const std::function<void()>& connectCallback);
     void close();
 
     void write(uint8* buffer, size_t size);
@@ -56,23 +58,48 @@ public:
     void read_until(const std::string& what, const RecvCallback& callback);
     void read_some(const RecvCallback& callback);
 
-    void setErrorCallback(const ErrorCallback& errorCallback) { m_errorCallback = errorCallback; }
+    void setErrorCallback(const ErrorCallback& errorCallback)
+    {
+        m_errorCallback = errorCallback;
+    }
 
     int getIp();
+
     boost::system::error_code getError() { return m_error; }
     bool isConnecting() { return m_connecting; }
     bool isConnected() { return m_connected; }
-    ticks_t getElapsedTicksSinceLastRead() { return m_connected ? m_activityTimer.elapsed_millis() : -1; }
 
-    ConnectionPtr asConnection() { return static_self_cast<Connection>(); }
+    ticks_t getElapsedTicksSinceLastRead()
+    {
+        return m_connected ? m_activityTimer.elapsed_millis() : -1;
+    }
+
+    ConnectionPtr asConnection()
+    {
+        return static_self_cast<Connection>();
+    }
 
 protected:
-    void internal_connect(asio::ip::basic_resolver<asio::ip::tcp>::iterator endpointIterator);
+    void internal_connect(
+        const asio::ip::tcp::resolver::results_type& endpoints
+    );
+
     void internal_write();
-    void onResolve(const boost::system::error_code& error, asio::ip::tcp::resolver::iterator endpointIterator);
+
+    void onResolve(
+        const boost::system::error_code& error,
+        asio::ip::tcp::resolver::results_type endpoints
+    );
+
     void onConnect(const boost::system::error_code& error);
     void onCanWrite(const boost::system::error_code& error);
-    void onWrite(const boost::system::error_code& error, size_t writeSize, std::shared_ptr<asio::streambuf> outputStream);
+
+    void onWrite(
+        const boost::system::error_code& error,
+        size_t writeSize,
+        std::shared_ptr<asio::streambuf> outputStream
+    );
+
     void onRecv(const boost::system::error_code& error, size_t recvSize);
     void onTimeout(const boost::system::error_code& error);
     void handleError(const boost::system::error_code& error);
@@ -84,14 +111,18 @@ protected:
     asio::steady_timer m_readTimer;
     asio::steady_timer m_writeTimer;
     asio::steady_timer m_delayedWriteTimer;
+
     asio::ip::tcp::resolver m_resolver;
     asio::ip::tcp::socket m_socket;
 
     static std::list<std::shared_ptr<asio::streambuf>> m_outputStreams;
+
     std::shared_ptr<asio::streambuf> m_outputStream;
     asio::streambuf m_inputStream;
+
     bool m_connected;
     bool m_connecting;
+
     boost::system::error_code m_error;
     stdext::timer m_activityTimer;
 
