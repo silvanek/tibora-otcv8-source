@@ -1,3 +1,4 @@
+
 /*
  * Copyright (c) 2010-2017 OTClient <https://github.com/edubart/otclient>
  *
@@ -29,15 +30,16 @@
 #include <framework/util/extras.h>
 #include <chrono>
 
-asio::io_service g_ioService;
+asio::io_context g_ioService;
+
 std::list<std::shared_ptr<asio::streambuf>> Connection::m_outputStreams;
 
 Connection::Connection() :
-        m_readTimer(g_ioService),
-        m_writeTimer(g_ioService),
-        m_delayedWriteTimer(g_ioService),
-        m_resolver(g_ioService),
-        m_socket(g_ioService)
+    m_readTimer(g_ioService),
+    m_writeTimer(g_ioService),
+    m_delayedWriteTimer(g_ioService),
+    m_resolver(g_ioService),
+    m_socket(g_ioService)
 {
     m_connected = false;
     m_connecting = false;
@@ -52,8 +54,8 @@ Connection::~Connection()
 void Connection::poll()
 {
     AutoStat s(STATS_MAIN, "PollConnection");
-    // reset must always be called prior to poll
-    g_ioService.reset();
+
+    g_ioService.restart();
     g_ioService.poll();
 }
 
@@ -68,7 +70,6 @@ void Connection::close()
     if(!m_connected && !m_connecting)
         return;
 
-    // flush send data before disconnecting on clean connections
     if(m_connected && !m_error && m_outputStream)
         internal_write();
 
@@ -85,33 +86,74 @@ void Connection::close()
 
     if(m_socket.is_open()) {
         boost::system::error_code ec;
-        m_socket.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
-        m_socket.close();
+        m_socket.shutdown(
+            boost::asio::ip::tcp::socket::shutdown_both, ec
+        );
+        m_socket.close(ec);
     }
 }
 
-void Connection::connect(const std::string& host, uint16 port, const std::function<void()>& connectCallback)
+void Connection::connect(
+    const std::string& host,
+    uint16 port,
+    const std::function<void()>& connectCallback)
 {
     m_connected = false;
     m_connecting = true;
     m_error.clear();
     m_connectCallback = connectCallback;
 
-    asio::ip::tcp::resolver::query query(host, stdext::unsafe_cast<std::string>(port));
-    m_resolver.async_resolve(query, std::bind(&Connection::onResolve, asConnection(), std::placeholders::_1, std::placeholders::_2));
+    m_resolver.async_resolve(
+        host,
+        stdext::unsafe_cast<std::string>(port),
+        [self = asConnection()](
+            const boost::system::error_code& error,
+            asio::ip::tcp::resolver::results_type endpoints)
+        {
+            self->onResolve(error, endpoints);
+        }
+    );
 
     m_readTimer.cancel();
-    m_readTimer.expires_from_now(std::chrono::seconds(READ_TIMEOUT));
-    m_readTimer.async_wait(std::bind(&Connection::onTimeout, asConnection(), std::placeholders::_1));
+    m_readTimer.expires_after(
+        std::chrono::seconds(READ_TIMEOUT)
+    );
+
+    m_readTimer.async_wait(
+        std::bind(
+            &Connection::onTimeout,
+            asConnection(),
+            std::placeholders::_1
+        )
+    );
 }
 
-void Connection::internal_connect(asio::ip::basic_resolver<asio::ip::tcp>::iterator endpointIterator)
+void Connection::internal_connect(
+    const asio::ip::tcp::resolver::results_type& endpoints)
 {
-    m_socket.async_connect(*endpointIterator, std::bind(&Connection::onConnect, asConnection(), std::placeholders::_1));
+    asio::async_connect(
+        m_socket,
+        endpoints,
+        [self = asConnection()](
+            const boost::system::error_code& error,
+            const asio::ip::tcp::endpoint&)
+        {
+            self->onConnect(error);
+        }
+    );
 
     m_readTimer.cancel();
-    m_readTimer.expires_from_now(std::chrono::seconds(READ_TIMEOUT));
-    m_readTimer.async_wait(std::bind(&Connection::onTimeout, asConnection(), std::placeholders::_1));
+    m_readTimer.expires_after(
+        std::chrono::seconds(READ_TIMEOUT)
+    );
+
+    m_readTimer.async_wait(
+        std::bind(
+            &Connection::onTimeout,
+            asConnection(),
+            std::placeholders::_1
+        )
+    );
 }
 
 void Connection::write(uint8* buffer, size_t size)
@@ -119,17 +161,26 @@ void Connection::write(uint8* buffer, size_t size)
     if(!m_connected)
         return;
 
-    // we can't send the data right away, otherwise we could create tcp congestion
     if(!m_outputStream) {
         if(!m_outputStreams.empty()) {
             m_outputStream = m_outputStreams.front();
             m_outputStreams.pop_front();
-        } else
-            m_outputStream = std::shared_ptr<asio::streambuf>(new asio::streambuf);
+        } else {
+            m_outputStream = std::make_shared<asio::streambuf>();
+        }
 
         m_delayedWriteTimer.cancel();
-        m_delayedWriteTimer.expires_from_now(std::chrono::milliseconds(0));
-        m_delayedWriteTimer.async_wait(std::bind(&Connection::onCanWrite, asConnection(), std::placeholders::_1));
+        m_delayedWriteTimer.expires_after(
+            std::chrono::milliseconds(0)
+        );
+
+        m_delayedWriteTimer.async_wait(
+            std::bind(
+                &Connection::onCanWrite,
+                asConnection(),
+                std::placeholders::_1
+            )
+        );
     }
 
     std::ostream os(m_outputStream.get());
@@ -145,46 +196,99 @@ void Connection::internal_write()
     std::shared_ptr<asio::streambuf> outputStream = m_outputStream;
     m_outputStream = nullptr;
 
-    asio::async_write(m_socket,
-                      *outputStream,
-                      std::bind(&Connection::onWrite, asConnection(), std::placeholders::_1, std::placeholders::_2, outputStream));
+    asio::async_write(
+        m_socket,
+        *outputStream,
+        std::bind(
+            &Connection::onWrite,
+            asConnection(),
+            std::placeholders::_1,
+            std::placeholders::_2,
+            outputStream
+        )
+    );
 
     m_writeTimer.cancel();
-    m_writeTimer.expires_from_now(std::chrono::seconds(WRITE_TIMEOUT));
-    m_writeTimer.async_wait(std::bind(&Connection::onTimeout, asConnection(), std::placeholders::_1));
+    m_writeTimer.expires_after(
+        std::chrono::seconds(WRITE_TIMEOUT)
+    );
+
+    m_writeTimer.async_wait(
+        std::bind(
+            &Connection::onTimeout,
+            asConnection(),
+            std::placeholders::_1
+        )
+    );
 }
 
-void Connection::read(uint32 bytes, const RecvCallback& callback)
+void Connection::read(
+    uint32 bytes,
+    const RecvCallback& callback)
 {
     if(!m_connected)
         return;
 
     m_recvCallback = callback;
 
-    asio::async_read(m_socket,
-                     asio::buffer(m_inputStream.prepare(bytes)),
-                     std::bind(&Connection::onRecv, asConnection(), std::placeholders::_1, std::placeholders::_2));
+    asio::async_read(
+        m_socket,
+        asio::buffer(m_inputStream.prepare(bytes)),
+        std::bind(
+            &Connection::onRecv,
+            asConnection(),
+            std::placeholders::_1,
+            std::placeholders::_2
+        )
+    );
 
     m_readTimer.cancel();
-    m_readTimer.expires_from_now(std::chrono::seconds(READ_TIMEOUT));
-    m_readTimer.async_wait(std::bind(&Connection::onTimeout, asConnection(), std::placeholders::_1));
+    m_readTimer.expires_after(
+        std::chrono::seconds(READ_TIMEOUT)
+    );
+
+    m_readTimer.async_wait(
+        std::bind(
+            &Connection::onTimeout,
+            asConnection(),
+            std::placeholders::_1
+        )
+    );
 }
 
-void Connection::read_until(const std::string& what, const RecvCallback& callback)
+void Connection::read_until(
+    const std::string& what,
+    const RecvCallback& callback)
 {
     if(!m_connected)
         return;
 
     m_recvCallback = callback;
 
-    asio::async_read_until(m_socket,
-                           m_inputStream,
-                           what.c_str(),
-                           std::bind(&Connection::onRecv, asConnection(), std::placeholders::_1, std::placeholders::_2));
+    asio::async_read_until(
+        m_socket,
+        m_inputStream,
+        what.c_str(),
+        std::bind(
+            &Connection::onRecv,
+            asConnection(),
+            std::placeholders::_1,
+            std::placeholders::_2
+        )
+    );
 
     m_readTimer.cancel();
-    m_readTimer.expires_from_now(std::chrono::seconds(READ_TIMEOUT));
-    m_readTimer.async_wait(std::bind(&Connection::onTimeout, asConnection(), std::placeholders::_1));
+    m_readTimer.expires_after(
+        std::chrono::seconds(READ_TIMEOUT)
+    );
+
+    m_readTimer.async_wait(
+        std::bind(
+            &Connection::onTimeout,
+            asConnection(),
+            std::placeholders::_1
+        )
+    );
 }
 
 void Connection::read_some(const RecvCallback& callback)
@@ -194,28 +298,52 @@ void Connection::read_some(const RecvCallback& callback)
 
     m_recvCallback = callback;
 
-    m_socket.async_read_some(asio::buffer(m_inputStream.prepare(RECV_BUFFER_SIZE)),
-                             std::bind(&Connection::onRecv, asConnection(), std::placeholders::_1, std::placeholders::_2));
+    m_socket.async_read_some(
+        asio::buffer(
+            m_inputStream.prepare(RECV_BUFFER_SIZE)
+        ),
+        std::bind(
+            &Connection::onRecv,
+            asConnection(),
+            std::placeholders::_1,
+            std::placeholders::_2
+        )
+    );
 
     m_readTimer.cancel();
-    m_readTimer.expires_from_now(std::chrono::seconds(READ_TIMEOUT));
-    m_readTimer.async_wait(std::bind(&Connection::onTimeout, asConnection(), std::placeholders::_1));
+    m_readTimer.expires_after(
+        std::chrono::seconds(READ_TIMEOUT)
+    );
+
+    m_readTimer.async_wait(
+        std::bind(
+            &Connection::onTimeout,
+            asConnection(),
+            std::placeholders::_1
+        )
+    );
 }
 
-void Connection::onResolve(const boost::system::error_code& error, asio::ip::basic_resolver<asio::ip::tcp>::iterator endpointIterator)
+void Connection::onResolve(
+    const boost::system::error_code& error,
+    asio::ip::tcp::resolver::results_type endpoints)
 {
     m_readTimer.cancel();
 
     if(error == asio::error::operation_aborted)
         return;
 
-    if(!error)
-        internal_connect(endpointIterator);
-    else
+    if(!error && endpoints.begin() != endpoints.end()) {
+        internal_connect(endpoints);
+    } else if(error) {
         handleError(error);
+    } else {
+        handleError(asio::error::host_not_found);
+    }
 }
 
-void Connection::onConnect(const boost::system::error_code& error)
+void Connection::onConnect(
+    const boost::system::error_code& error)
 {
     m_readTimer.cancel();
     m_activityTimer.restart();
@@ -226,22 +354,32 @@ void Connection::onConnect(const boost::system::error_code& error)
     if(!error) {
         m_connected = true;
 
-        // disable nagle's algorithm, this make the game play smoother
         boost::asio::ip::tcp::no_delay option(true);
         m_socket.set_option(option);
+
         boost::system::error_code ecc;
-        m_socket.set_option(boost::asio::socket_base::send_buffer_size(524288), ecc);
-        m_socket.set_option(boost::asio::socket_base::receive_buffer_size(524288), ecc);
+
+        m_socket.set_option(
+            boost::asio::socket_base::send_buffer_size(524288),
+            ecc
+        );
+
+        m_socket.set_option(
+            boost::asio::socket_base::receive_buffer_size(524288),
+            ecc
+        );
 
         if(m_connectCallback)
             m_connectCallback();
-    } else
+    } else {
         handleError(error);
+    }
 
     m_connecting = false;
 }
 
-void Connection::onCanWrite(const boost::system::error_code& error)
+void Connection::onCanWrite(
+    const boost::system::error_code& error)
 {
     m_delayedWriteTimer.cancel();
 
@@ -252,14 +390,16 @@ void Connection::onCanWrite(const boost::system::error_code& error)
         internal_write();
 }
 
-void Connection::onWrite(const boost::system::error_code& error, size_t writeSize, std::shared_ptr<asio::streambuf> outputStream)
+void Connection::onWrite(
+    const boost::system::error_code& error,
+    size_t writeSize,
+    std::shared_ptr<asio::streambuf> outputStream)
 {
     m_writeTimer.cancel();
 
     if(error == asio::error::operation_aborted)
         return;
 
-    // free output stream and store for using it again later
     outputStream->consume(outputStream->size());
     m_outputStreams.push_back(outputStream);
 
@@ -267,7 +407,9 @@ void Connection::onWrite(const boost::system::error_code& error, size_t writeSiz
         handleError(error);
 }
 
-void Connection::onRecv(const boost::system::error_code& error, size_t recvSize)
+void Connection::onRecv(
+    const boost::system::error_code& error,
+    size_t recvSize)
 {
     m_readTimer.cancel();
     m_activityTimer.restart();
@@ -278,18 +420,24 @@ void Connection::onRecv(const boost::system::error_code& error, size_t recvSize)
     if(m_connected) {
         if(!error) {
             if(m_recvCallback) {
-                const char* header = boost::asio::buffer_cast<const char*>(m_inputStream.data());
+                const char* header =
+                    boost::asio::buffer_cast<const char*>(
+                        m_inputStream.data()
+                    );
+
                 m_recvCallback((uint8*)header, recvSize);
             }
-        } else
+        } else {
             handleError(error);
+        }
     }
 
     if(!error)
         m_inputStream.consume(recvSize);
 }
 
-void Connection::onTimeout(const boost::system::error_code& error)
+void Connection::onTimeout(
+    const boost::system::error_code& error)
 {
     if(error == asio::error::operation_aborted)
         return;
@@ -297,14 +445,17 @@ void Connection::onTimeout(const boost::system::error_code& error)
     handleError(asio::error::timed_out);
 }
 
-void Connection::handleError(const boost::system::error_code& error)
+void Connection::handleError(
+    const boost::system::error_code& error)
 {
     if(error == asio::error::operation_aborted)
         return;
 
     m_error = error;
+
     if(m_errorCallback)
         m_errorCallback(error);
+
     if(m_connected || m_connecting)
         close();
 }
@@ -312,9 +463,15 @@ void Connection::handleError(const boost::system::error_code& error)
 int Connection::getIp()
 {
     boost::system::error_code error;
-    const boost::asio::ip::tcp::endpoint ip = m_socket.remote_endpoint(error);
+
+    const boost::asio::ip::tcp::endpoint ip =
+        m_socket.remote_endpoint(error);
+
     if(!error)
-        return boost::asio::detail::socket_ops::host_to_network_long(ip.address().to_v4().to_ulong());
+        return boost::asio::detail::socket_ops::
+            host_to_network_long(
+                ip.address().to_v4().to_ulong()
+            );
 
     g_logger.error("Getting remote ip");
     return 0;
