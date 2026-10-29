@@ -1,3 +1,4 @@
+
 /*
  * This is the bit32 library from lua 5.2.0, backported to
  * lua 5.1.4.
@@ -29,6 +30,8 @@
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
+
+#include <climits>
 
 #define LUA_LIB
 
@@ -376,4 +379,3 @@ int luaopen_bit32 (lua_State *L) {
 }
 
 #undef trim
-
