@@ -1,3 +1,4 @@
+
 /*
  * Copyright (c) 2010-2017 OTClient <https://github.com/edubart/otclient>
  *
@@ -93,7 +94,6 @@ void Protocol::disconnect()
     }
 }
 
-
 void Protocol::playRecord(PacketPlayerPtr player)
 {
     m_disconnected = false;
@@ -183,32 +183,29 @@ void Protocol::recv()
     m_inputMessage->reset();
 
     // first update message header size
-    int headerSize = m_bigPackets ? 4 : 2; // 2 or 4 bytes for message size
+    int headerSize = m_bigPackets ? 4 : 2;
     if (m_checksumEnabled)
-        headerSize += 4; // 4 bytes for checksum
+        headerSize += 4;
     if (m_xteaEncryptionEnabled)
-        headerSize += m_bigPackets ? 4 : 2; // 2 or 4 bytes for XTEA encrypted message size
+        headerSize += m_bigPackets ? 4 : 2;
     m_inputMessage->setHeaderSize(headerSize);
 
-    // read the first 2 bytes which contain the message size
+    // read the first bytes which contain the message size
     if (m_connection)
         m_connection->read(m_bigPackets ? 4 : 2, std::bind(&Protocol::internalRecvHeader, asProtocol(), std::placeholders::_1, std::placeholders::_2));
 }
 
 void Protocol::internalRecvHeader(uint8* buffer, uint32 size)
 {
-    // read message size
     m_inputMessage->fillBuffer(buffer, size);
     uint32 remainingSize = m_inputMessage->readSize(m_bigPackets);
 
-    // read remaining message data
     if (m_connection)
         m_connection->read(remainingSize, std::bind(&Protocol::internalRecvData, asProtocol(), std::placeholders::_1, std::placeholders::_2));
 }
 
 void Protocol::internalRecvData(uint8* buffer, uint32 size)
 {
-    // process data only if really connected
     if (!isConnected()) {
         g_logger.traceError("received data while disconnected");
         return;
@@ -222,7 +219,7 @@ void Protocol::internalRecvData(uint8* buffer, uint32 size)
             decompress = true;
         }
     } else if (m_checksumEnabled) {
-        if (m_inputMessage->peekU32() == 0) { // compressed data
+        if (m_inputMessage->peekU32() == 0) {
             m_inputMessage->getU32();
             decompress = true;
         } else if (!m_inputMessage->readChecksum()) {
@@ -331,7 +328,6 @@ void Protocol::xteaEncrypt(const OutputMessagePtr& outputMessage)
     outputMessage->writeMessageSize(m_bigPackets);
     uint32 encryptedSize = outputMessage->getMessageSize();
 
-    //add bytes until reach 8 multiple
     if ((encryptedSize % 8) != 0) {
         uint32 n = 8 - (encryptedSize % 8);
         outputMessage->addPaddingBytes(n);
@@ -375,12 +371,14 @@ void Protocol::onPlayerPacket(const std::shared_ptr<std::vector<uint8_t>>& packe
 {
     if (m_disconnected)
         return;
+
     auto self(asProtocol());
-    boost::asio::post(g_ioService, [&, self, packet] {
+
+    asio::post(g_ioService, [&, self, packet] {
         if (m_disconnected)
             return;
-        m_inputMessage->reset();
 
+        m_inputMessage->reset();
         m_inputMessage->setHeaderSize(0);
         m_inputMessage->fillBuffer(packet->data(), packet->size());
         m_inputMessage->setMessageSize(packet->size());
@@ -392,22 +390,29 @@ void Protocol::onProxyPacket(const std::shared_ptr<std::vector<uint8_t>>& packet
 {
     if (m_disconnected)
         return;
+
     auto self(asProtocol());
-    boost::asio::post(g_ioService, [&, self, packet] {
+
+    asio::post(g_ioService, [&, self, packet] {
         if (m_disconnected)
             return;
+
         m_inputMessage->reset();
 
-        // first update message header size
-        int headerSize = m_bigPackets ? 4 : 2; // 2 bytes for message size
+        int headerSize = m_bigPackets ? 4 : 2;
         if (m_checksumEnabled)
-            headerSize += 4; // 4 bytes for checksum
+            headerSize += 4;
         if (m_xteaEncryptionEnabled)
-            headerSize += m_bigPackets ? 4 : 2; // 2 bytes for XTEA encrypted message size
+            headerSize += m_bigPackets ? 4 : 2;
+
         m_inputMessage->setHeaderSize(headerSize);
         m_inputMessage->fillBuffer(packet->data(), m_bigPackets ? 4 : 2);
         m_inputMessage->readSize(m_bigPackets);
-        internalRecvData(packet->data() + (m_bigPackets ? 4 : 2), packet->size() - (m_bigPackets ? 4 : 2));
+
+        internalRecvData(
+            packet->data() + (m_bigPackets ? 4 : 2),
+            packet->size() - (m_bigPackets ? 4 : 2)
+        );
     });
 }
 
@@ -415,10 +420,13 @@ void Protocol::onLocalDisconnected(boost::system::error_code ec)
 {
     if (m_disconnected)
         return;
+
     auto self(asProtocol());
-    boost::asio::post(g_ioService, [&, self, ec] {
+
+    asio::post(g_ioService, [&, self, ec] {
         if (m_disconnected)
             return;
+
         m_disconnected = true;
         onError(ec);
     });
