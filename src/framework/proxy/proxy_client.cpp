@@ -1,4 +1,5 @@
-//#define PROXY_DEBUG
+
+ //#define PROXY_DEBUG
 
 #include <framework/global.h>
 #include <iostream>
@@ -36,8 +37,7 @@ void Proxy::terminate()
     boost::asio::post(m_io, [&, self] {
         g_proxies.erase(self);
         disconnect();
-        boost::system::error_code ec;
-        m_timer.cancel(ec);
+        m_timer.cancel();
     });
 }
 
@@ -49,7 +49,6 @@ std::string Proxy::getDebugInfo()
     return ss.str();
 }
 
-
 void Proxy::check(const boost::system::error_code& ec)
 {
     if (ec || m_terminated) {
@@ -59,13 +58,13 @@ void Proxy::check(const boost::system::error_code& ec)
     int32_t lastPing = (int32_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - m_lastPingSent).count();
     if (m_state == STATE_NOT_CONNECTED) {
         connect();
-    } else if (m_state == STATE_CONNECTING) { // timeout for async_connect
+    } else if (m_state == STATE_CONNECTING) {
         if (lastPing + 50 > CHECK_INTERVAL * 5) {
             disconnect();
         }
     } else if (m_state == STATE_CONNECTED || m_state == STATE_CONNECTING_WAIT_FOR_PING) {
         if (m_waitingForPing) {
-            if (lastPing + 50 > CHECK_INTERVAL* (m_state == STATE_CONNECTING_WAIT_FOR_PING ? 5 : 3)) {
+            if (lastPing + 50 > CHECK_INTERVAL * (m_state == STATE_CONNECTING_WAIT_FOR_PING ? 5 : 3)) {
 #ifdef PROXY_DEBUG
                 std::clog << "[Proxy " << m_host << "] ping timeout" << std::endl;
 #endif
@@ -75,7 +74,7 @@ void Proxy::check(const boost::system::error_code& ec)
             ping();
         }
     }
-    m_timer.expires_from_now(std::chrono::milliseconds(CHECK_INTERVAL));
+    m_timer.expires_after(std::chrono::milliseconds(CHECK_INTERVAL));
     m_timer.async_wait(std::bind(&Proxy::check, shared_from_this(), std::placeholders::_1));
 }
 
@@ -106,12 +105,12 @@ void Proxy::connect()
             }
             endpoint = boost::asio::ip::tcp::endpoint(address, self->m_port);
         } else {
-            endpoint = boost::asio::ip::tcp::endpoint(*results);
+            endpoint = results.begin()->endpoint();
             endpoint.port(self->m_port);
         }
         self->m_resolvedIp = endpoint.address().to_string();
         self->m_socket = boost::asio::ip::tcp::socket(self->m_io);
-        self->m_lastPingSent = std::chrono::high_resolution_clock::now(); // used for async_connect timeout
+        self->m_lastPingSent = std::chrono::high_resolution_clock::now();
         self->m_socket.async_connect(endpoint, [self, endpoint](const boost::system::error_code& ec) {
             if (ec) {
                 self->m_state = STATE_NOT_CONNECTED;
@@ -149,9 +148,8 @@ void Proxy::ping()
 {
     m_lastPingSent = std::chrono::high_resolution_clock::now();
     m_waitingForPing = true;
-    // 2 byte size + 4 byte session (0 so it's ping) + 4 byte packet num (0) + 4 byte last recived packet num + 4 byte local ping
     auto packet = std::make_shared<ProxyPacket>(18, 0);
-    packet->at(0) = 16; // size = 12
+    packet->at(0) = 16;
     *(uint32_t*)(&packet->data()[10]) = UID;
     *(uint32_t*)(&packet->data()[14]) = m_ping;
     send(packet);
@@ -169,7 +167,7 @@ void Proxy::onPing(uint32_t packetId)
 void Proxy::addSession(uint32_t id, int port)
 {
     auto packet = std::make_shared<ProxyPacket>(14, 0);
-    packet->at(0) = 12; // size = 12
+    packet->at(0) = 12;
     *(uint32_t*)(&(packet->data()[2])) = id;
     *(uint32_t*)(&(packet->data()[10])) = port;
     send(packet);
@@ -179,7 +177,7 @@ void Proxy::addSession(uint32_t id, int port)
 void Proxy::removeSession(uint32_t id)
 {
     auto packet = std::make_shared<ProxyPacket>(14, 0);
-    packet->at(0) = 12; // size = 12
+    packet->at(0) = 12;
     *(uint32_t*)(&(packet->data()[2])) = id;
     *(uint32_t*)(&(packet->data()[6])) = 0xFFFFFFFF;
     send(packet);
@@ -262,7 +260,6 @@ void Proxy::onPacket(const boost::system::error_code& ec, std::size_t bytes_tran
     readHeader();
 }
 
-
 void Proxy::send(const ProxyPacketPtr& packet)
 {
     bool sendNow = m_sendQueue.empty();
@@ -323,7 +320,7 @@ void Session::terminate(boost::system::error_code ec)
             boost::system::error_code ecc;
             m_socket.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ecc);
             m_socket.close(ecc);
-            m_timer.cancel(ecc);
+            m_timer.cancel();
         } else if (m_disconnectCallback) {
             m_disconnectCallback(ec);
         }
@@ -348,7 +345,7 @@ void Session::check(const boost::system::error_code& ec)
 
     selectProxies();
 
-    m_timer.expires_from_now(std::chrono::milliseconds(CHECK_INTERVAL));
+    m_timer.expires_after(std::chrono::milliseconds(CHECK_INTERVAL));
     m_timer.async_wait(std::bind(&Session::check, shared_from_this(), std::placeholders::_1));
 }
 
@@ -376,7 +373,6 @@ void Session::selectProxies()
         }
     }
     if (candidate_proxy) {
-        // change worst to new proxy only if it has at least 20 ms better ping then worst proxy
         bool disconnectWorst = worst_ping && worst_ping != best_ping && worst_ping->getPing() > candidate_proxy->getPing() + 20;
         if (m_proxies.size() != m_maxConnections || disconnectWorst) {
 #ifdef PROXY_DEBUG
@@ -405,7 +401,7 @@ void Session::onProxyPacket(uint32_t packetId, uint32_t lastRecivedPacketId, con
         " (" << m_outputPacketId << ") size: " << packet->size() << std::endl;
 #endif
     if (packetId < m_inputPacketId) {
-        return; // old packet, ignore
+        return;
     }
 
     auto it = m_proxySendQueue.begin();
@@ -451,7 +447,6 @@ void Session::readTibia12Header()
         }
         self->readTibia12Header();
     });
-
 }
 
 void Session::readHeader()
