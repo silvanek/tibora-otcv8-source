@@ -81,7 +81,6 @@ jobs:
           }
 
           Write-Host "Boost headers verified"
-          Write-Host "Include directory: $includeDir"
 
       - name: Integrate vcpkg
         run: |
@@ -91,7 +90,13 @@ jobs:
             throw "vcpkg integration failed"
           }
 
-      - name: Compile DirectX
+      - name: Prepare diagnostic logs
+        run: |
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+
+      - name: Compile DirectX and collect errors
+        id: directx
+        continue-on-error: true
         timeout-minutes: 25
         run: |
           $env:INCLUDE = "$env:VCPKG_ROOT\installed\x86-windows-static\include;$env:INCLUDE"
@@ -99,17 +104,23 @@ jobs:
 
           Push-Location vc16
           try {
-            msbuild /m /p:Configuration=DirectX /p:Platform=Win32 /p:VcpkgRoot="$env:VCPKG_ROOT\" /p:VcpkgTriplet=x86-windows-static /p:BUILD_REVISION=${{ github.run_number }}
+            msbuild otclient.sln /m /p:Configuration=DirectX /p:Platform=Win32 /p:VcpkgRoot="$env:VCPKG_ROOT\" /p:VcpkgTriplet=x86-windows-static /p:MultiProcessorCompilation=true /p:BUILD_REVISION=${{ github.run_number }} /verbosity:normal /fl "/flp:logfile=../logs/directx.log;verbosity=normal"
 
-            if ($LASTEXITCODE -ne 0) {
-              throw "DirectX compilation failed"
+            $result = $LASTEXITCODE
+            if ($result -ne 0) {
+              Write-Host "DirectX failed. Log saved."
             }
+
+            exit $result
           }
           finally {
             Pop-Location
           }
 
-      - name: Compile OpenGL
+      - name: Compile OpenGL and collect errors
+        id: opengl
+        if: always()
+        continue-on-error: true
         timeout-minutes: 25
         run: |
           $env:INCLUDE = "$env:VCPKG_ROOT\installed\x86-windows-static\include;$env:INCLUDE"
@@ -117,22 +128,65 @@ jobs:
 
           Push-Location vc16
           try {
-            msbuild /m /p:Configuration=OpenGL /p:Platform=Win32 /p:VcpkgRoot="$env:VCPKG_ROOT\" /p:VcpkgTriplet=x86-windows-static /p:BUILD_REVISION=${{ github.run_number }}
+            msbuild otclient.sln /m /p:Configuration=OpenGL /p:Platform=Win32 /p:VcpkgRoot="$env:VCPKG_ROOT\" /p:VcpkgTriplet=x86-windows-static /p:MultiProcessorCompilation=true /p:BUILD_REVISION=${{ github.run_number }} /verbosity:normal /fl "/flp:logfile=../logs/opengl.log;verbosity=normal"
 
-            if ($LASTEXITCODE -ne 0) {
-              throw "OpenGL compilation failed"
+            $result = $LASTEXITCODE
+            if ($result -ne 0) {
+              Write-Host "OpenGL failed. Log saved."
             }
+
+            exit $result
           }
           finally {
             Pop-Location
           }
+
+      - name: Collect all compiler errors
+        if: always()
+        run: |
+          $allErrors = @()
+
+          foreach ($file in @("logs/directx.log", "logs/opengl.log")) {
+            if (Test-Path $file) {
+              $matches = Get-Content $file | Where-Object {
+                $_ -match 'error C[0-9]+|fatal error|error LNK[0-9]+|MSB[0-9]+'
+              }
+
+              $allErrors += "===== $file ====="
+              $allErrors += $matches
+
+              Write-Host "Errors found in ${file}: $($matches.Count)"
+            }
+          }
+
+          $allErrors | Set-Content -Path "logs/ALL_ERRORS.txt" -Encoding UTF8
+
+          Get-Content "logs/ALL_ERRORS.txt"
+
+      - name: Upload all diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tibora-OTCv8-Errors
+          path: logs/
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload Windows binaries
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Tibora-OTCv8-Windows
           path: |
             otclient_dx.exe
             otclient_gl.exe
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 7
+
+      - name: Final build status
+        if: always()
+        run: |
+          if ("${{ steps.directx.outcome }}" -ne "success" -or
+              "${{ steps.opengl.outcome }}" -ne "success") {
+            throw "One or more builds failed. Download Tibora-OTCv8-Errors."
+          }
