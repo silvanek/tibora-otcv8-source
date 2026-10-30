@@ -420,10 +420,12 @@ void Connection::onRecv(
     if(m_connected) {
         if(!error) {
             if(m_recvCallback) {
-                const char* header =
-                    boost::asio::buffer_cast<const char*>(
+                const auto buffer =
+                    *boost::asio::buffer_sequence_begin(
                         m_inputStream.data()
                     );
+                const char* header =
+                    static_cast<const char*>(buffer.data());
 
                 m_recvCallback((uint8*)header, recvSize);
             }
@@ -470,7 +472,7 @@ int Connection::getIp()
     if(!error)
         return boost::asio::detail::socket_ops::
             host_to_network_long(
-                ip.address().to_v4().to_ulong()
+                ip.address().to_v4().to_uint()
             );
 
     g_logger.error("Getting remote ip");
