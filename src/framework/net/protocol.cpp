@@ -1,4 +1,3 @@
-
 /*
  * Copyright (c) 2010-2017 OTClient <https://github.com/edubart/otclient>
  *
@@ -29,7 +28,7 @@
 #include <framework/net/packet_player.h>
 #include <framework/net/packet_recorder.h>
 
-extern asio::io_service g_ioService;
+extern asio::io_context g_ioService;
 
 Protocol::Protocol()
 {
