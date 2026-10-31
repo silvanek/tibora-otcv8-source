@@ -29,11 +29,13 @@ jobs:
       - name: Install vcpkg
         run: |
           git clone --branch 2026.10.16 --depth 1 https://github.com/microsoft/vcpkg.git "$env:RUNNER_TEMP\vcpkg"
+
           if ($LASTEXITCODE -ne 0) {
             throw "Failed to clone vcpkg"
           }
 
           & "$env:RUNNER_TEMP\vcpkg\bootstrap-vcpkg.bat" -disableMetrics
+
           if ($LASTEXITCODE -ne 0) {
             throw "vcpkg bootstrap failed"
           }
@@ -71,16 +73,24 @@ jobs:
             throw "Dependency installation failed"
           }
 
-      - name: Verify Boost headers
+      - name: Verify dependencies
         run: |
-          $includeDir = Join-Path $env:VCPKG_ROOT "installed\x86-windows-static\include"
-          $boostHeader = Join-Path $includeDir "boost\asio\io_context.hpp"
+          $root = Join-Path $env:VCPKG_ROOT "installed\x86-windows-static"
+
+          $boostHeader = Join-Path $root "include\boost\asio\io_context.hpp"
 
           if (-not (Test-Path $boostHeader)) {
-            throw "Missing Boost header: $boostHeader"
+            throw "Boost.Asio headers missing"
           }
 
-          Write-Host "Boost headers verified"
+          $libDir = Join-Path $root "lib"
+
+          if (-not (Test-Path $libDir)) {
+            throw "Vcpkg library directory missing"
+          }
+
+          Write-Host "Boost verified"
+          Write-Host "Library directory: $libDir"
 
       - name: Integrate vcpkg
         run: |
@@ -89,6 +99,98 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "vcpkg integration failed"
           }
+
+      - name: Resolve linker libraries automatically
+        run: |
+          $libDir = Join-Path $env:VCPKG_ROOT "installed\x86-windows-static\lib"
+          $settingsPath = "vc16/settings.props"
+
+          if (-not (Test-Path $settingsPath)) {
+            throw "Cannot find vc16/settings.props"
+          }
+
+          $available = @(
+            Get-ChildItem -Path $libDir -Filter "*.lib" -File |
+            Select-Object -ExpandProperty Name
+          )
+
+          Write-Host "===== INSTALLED LIBRARIES ====="
+          $available | ForEach-Object {
+            Write-Host $_
+          }
+
+          $settings = [System.IO.File]::ReadAllText(
+            (Resolve-Path $settingsPath).Path
+          )
+
+          $libraries = [ordered]@{
+            "zlib.lib" = @(
+              "zlib.lib",
+              "zlibstatic.lib",
+              "zs.lib",
+              "z.lib"
+            )
+            "libssl.lib" = @(
+              "libssl.lib",
+              "ssl.lib"
+            )
+            "physfs-static.lib" = @(
+              "physfs-static.lib",
+              "physfs.lib"
+            )
+            "lua51.lib" = @(
+              "lua51.lib",
+              "luajit.lib",
+              "lua5.1.lib"
+            )
+          }
+
+          $missing = @()
+
+          foreach ($legacy in $libraries.Keys) {
+            $selected = $null
+
+            foreach ($candidate in $libraries[$legacy]) {
+              if ($available -contains $candidate) {
+                $selected = $candidate
+                break
+              }
+            }
+
+            if (-not $selected) {
+              $missing += $legacy
+              Write-Host "MISSING: $legacy"
+              continue
+            }
+
+            Write-Host "LINKER: $legacy -> $selected"
+
+            $escaped = [regex]::Escape($legacy)
+            $pattern = "(?i)$escaped(?=\s*;)"
+
+            $settings = [regex]::Replace(
+              $settings,
+              $pattern,
+              $selected
+            )
+          }
+
+          if ($missing.Count -gt 0) {
+            Write-Host "===== MISSING LIBRARIES ====="
+            $missing | ForEach-Object {
+              Write-Host $_
+            }
+
+            throw "Required libraries could not be located"
+          }
+
+          [System.IO.File]::WriteAllText(
+            (Resolve-Path $settingsPath).Path,
+            $settings,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+
+          Write-Host "Linker configuration updated"
 
       - name: Prepare diagnostic logs
         run: |
@@ -103,12 +205,14 @@ jobs:
           $env:LIB = "$env:VCPKG_ROOT\installed\x86-windows-static\lib;$env:LIB"
 
           Push-Location vc16
+
           try {
             msbuild otclient.sln /m /p:Configuration=DirectX /p:Platform=Win32 /p:VcpkgRoot="$env:VCPKG_ROOT\" /p:VcpkgTriplet=x86-windows-static /p:MultiProcessorCompilation=true /p:BUILD_REVISION=${{ github.run_number }} /verbosity:normal /fl "/flp:logfile=../logs/directx.log;verbosity=normal"
 
             $result = $LASTEXITCODE
+
             if ($result -ne 0) {
-              Write-Host "DirectX failed. Log saved."
+              Write-Host "DirectX build failed"
             }
 
             exit $result
@@ -127,12 +231,14 @@ jobs:
           $env:LIB = "$env:VCPKG_ROOT\installed\x86-windows-static\lib;$env:LIB"
 
           Push-Location vc16
+
           try {
             msbuild otclient.sln /m /p:Configuration=OpenGL /p:Platform=Win32 /p:VcpkgRoot="$env:VCPKG_ROOT\" /p:VcpkgTriplet=x86-windows-static /p:MultiProcessorCompilation=true /p:BUILD_REVISION=${{ github.run_number }} /verbosity:normal /fl "/flp:logfile=../logs/opengl.log;verbosity=normal"
 
             $result = $LASTEXITCODE
+
             if ($result -ne 0) {
-              Write-Host "OpenGL failed. Log saved."
+              Write-Host "OpenGL build failed"
             }
 
             exit $result
@@ -144,22 +250,26 @@ jobs:
       - name: Collect all compiler errors
         if: always()
         run: |
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+
           $allErrors = @()
 
           foreach ($file in @("logs/directx.log", "logs/opengl.log")) {
             if (Test-Path $file) {
-              $matches = Get-Content $file | Where-Object {
-                $_ -match 'error C[0-9]+|fatal error|error LNK[0-9]+|MSB[0-9]+'
-              }
+              $matches = @(
+                Get-Content $file | Where-Object {
+                  $_ -match 'error C[0-9]+|fatal error|error LNK[0-9]+|error MSB[0-9]+'
+                }
+              )
 
               $allErrors += "===== $file ====="
               $allErrors += $matches
 
-              Write-Host "Errors found in ${file}: $($matches.Count)"
+              Write-Host "Errors in ${file}: $($matches.Count)"
             }
           }
 
-          $allErrors | Set-Content -Path "logs/ALL_ERRORS.txt" -Encoding UTF8
+          $allErrors | Set-Content "logs/ALL_ERRORS.txt" -Encoding UTF8
 
           Get-Content "logs/ALL_ERRORS.txt"
 
@@ -188,5 +298,7 @@ jobs:
         run: |
           if ("${{ steps.directx.outcome }}" -ne "success" -or
               "${{ steps.opengl.outcome }}" -ne "success") {
-            throw "One or more builds failed. Download Tibora-OTCv8-Errors."
+            throw "One or more builds failed. Check diagnostic logs."
           }
+
+          Write-Host "Tibora OTCv8 Windows build successful!"
