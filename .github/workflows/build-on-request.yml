@@ -78,12 +78,11 @@ jobs:
           $root = Join-Path $env:VCPKG_ROOT "installed\x86-windows-static"
 
           $boostHeader = Join-Path $root "include\boost\asio\io_context.hpp"
+          $libDir = Join-Path $root "lib"
 
           if (-not (Test-Path $boostHeader)) {
             throw "Boost.Asio headers missing"
           }
-
-          $libDir = Join-Path $root "lib"
 
           if (-not (Test-Path $libDir)) {
             throw "Vcpkg library directory missing"
@@ -104,9 +103,14 @@ jobs:
         run: |
           $libDir = Join-Path $env:VCPKG_ROOT "installed\x86-windows-static\lib"
           $settingsPath = "vc16/settings.props"
+          $projectPath = "vc16/otclient.vcxproj"
 
           if (-not (Test-Path $settingsPath)) {
             throw "Cannot find vc16/settings.props"
+          }
+
+          if (-not (Test-Path $projectPath)) {
+            throw "Cannot find vc16/otclient.vcxproj"
           }
 
           $available = @(
@@ -115,6 +119,7 @@ jobs:
           )
 
           Write-Host "===== INSTALLED LIBRARIES ====="
+
           $available | ForEach-Object {
             Write-Host $_
           }
@@ -177,6 +182,7 @@ jobs:
 
           if ($missing.Count -gt 0) {
             Write-Host "===== MISSING LIBRARIES ====="
+
             $missing | ForEach-Object {
               Write-Host $_
             }
@@ -190,7 +196,50 @@ jobs:
             [System.Text.UTF8Encoding]::new($false)
           )
 
-          Write-Host "Linker configuration updated"
+          Write-Host "Settings linker configuration updated"
+
+          # Detect the actual GLEW library installed by vcpkg.
+
+          $project = [System.IO.File]::ReadAllText(
+            (Resolve-Path $projectPath).Path
+          )
+
+          $glewNames = @(
+            "glew32.lib",
+            "glew32s.lib",
+            "GLEW.lib",
+            "glew.lib"
+          )
+
+          $glewLib = $glewNames |
+            Where-Object { $available -contains $_ } |
+            Select-Object -First 1
+
+          if (-not $glewLib) {
+            $found = @(
+              $available | Where-Object { $_ -match "glew" }
+            )
+
+            Write-Host "Available GLEW-like libraries:"
+            $found | ForEach-Object { Write-Host $_ }
+
+            throw "GLEW library not found"
+          }
+
+          Write-Host "GLEW linker library: $glewLib"
+
+          $project = $project.Replace(
+            "glew32.lib;opengl32.lib",
+            "$glewLib;opengl32.lib"
+          )
+
+          [System.IO.File]::WriteAllText(
+            (Resolve-Path $projectPath).Path,
+            $project,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+
+          Write-Host "Project linker configuration updated"
 
       - name: Prepare diagnostic logs
         run: |
@@ -207,7 +256,7 @@ jobs:
           Push-Location vc16
 
           try {
-            msbuild otclient.sln /m /p:Configuration=DirectX /p:Platform=Win32 /p:VcpkgRoot="$env:VCPKG_ROOT\" /p:VcpkgTriplet=x86-windows-static /p:MultiProcessorCompilation=true /p:BUILD_REVISION=${{ github.run_number }} /verbosity:normal /fl "/flp:logfile=../logs/directx.log;verbosity=normal"
+            msbuild otclient.sln /m /p:Configuration=DirectX /p:Platform=Win32 /p:PlatformToolset=v143 /p:VcpkgRoot="$env:VCPKG_ROOT\" /p:VcpkgTriplet=x86-windows-static /p:MultiProcessorCompilation=true /p:BUILD_REVISION=${{ github.run_number }} /verbosity:normal /fl "/flp:logfile=../logs/directx.log;verbosity=normal"
 
             $result = $LASTEXITCODE
 
@@ -233,7 +282,7 @@ jobs:
           Push-Location vc16
 
           try {
-            msbuild otclient.sln /m /p:Configuration=OpenGL /p:Platform=Win32 /p:VcpkgRoot="$env:VCPKG_ROOT\" /p:VcpkgTriplet=x86-windows-static /p:MultiProcessorCompilation=true /p:BUILD_REVISION=${{ github.run_number }} /verbosity:normal /fl "/flp:logfile=../logs/opengl.log;verbosity=normal"
+            msbuild otclient.sln /m /p:Configuration=OpenGL /p:Platform=Win32 /p:PlatformToolset=v143 /p:VcpkgRoot="$env:VCPKG_ROOT\" /p:VcpkgTriplet=x86-windows-static /p:MultiProcessorCompilation=true /p:BUILD_REVISION=${{ github.run_number }} /verbosity:normal /fl "/flp:logfile=../logs/opengl.log;verbosity=normal"
 
             $result = $LASTEXITCODE
 
