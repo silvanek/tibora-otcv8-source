@@ -205,6 +205,7 @@ jobs:
           )
 
           $glewNames = @(
+            "libglew32.lib",
             "glew32.lib",
             "glew32s.lib",
             "GLEW.lib",
